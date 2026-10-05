@@ -23,8 +23,15 @@ type Key struct {
 	ActivityType string `json:"activity_type,omitempty"`
 }
 
+type Pagination struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"page_size"`
+	TotalPages int `json:"total_pages"`
+}
+
 type Stats struct {
 	TotalUsers         int                       `json:"total_users"`
 	ActivityTotals     map[string]int            `json:"activity_totals"`
 	UserActivityCounts map[string]map[string]int `json:"user_activity_counts"`
+	Pagination         Pagination                `json:"pagination"`
 }

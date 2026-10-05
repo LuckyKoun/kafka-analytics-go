@@ -9,6 +9,7 @@
 - **API**
     - `GET /stats` (port 8080) returns the aggregated results stored in PostgreSQL:
       the number of distinct users, the total count per activity, and the count per user per activity.
+      The list of users is paginated.
 
       ```json
       {
@@ -17,10 +18,14 @@
         "user_activity_counts": {
           "u1": { "page_view": 3 },
           "u2": { "page_view": 2 }
-        }
+        },
+        "pagination": { "page": 1, "page_size": 50, "total_pages": 1 }
       }
       ```
-      Errors return `500` with `{"error": "..."}`; other methods return `405`.
+      - `total_users` and `activity_totals` always cover every user. Only `user_activity_counts` is paginated, in `user_id` order, and a user is never split across pages.
+      - Query parameters: `page` (default `1`) and `page_size` (default `50`, maximum `100`), for example `GET /stats?page=2&page_size=20`.
+      - A `page` after the last one returns an empty `user_activity_counts` with the same totals.
+      - A `page` or `page_size` that is not a whole number in range returns `400`; database errors return `500`, both as `{"error": "..."}`; other methods return `405`.
 
 ## Running the local setup
 
@@ -67,7 +72,7 @@ curl localhost:8080/stats
 ```
 
 ```json
-{"total_users":1,"activity_totals":{"page_view":1},"user_activity_counts":{"user-1":{"page_view":1}}}
+{"total_users":1,"activity_totals":{"page_view":1},"user_activity_counts":{"user-1":{"page_view":1}},"pagination":{"page":1,"page_size":50,"total_pages":1}}
 ```
 
 The consumer flushes after every batch, so the numbers show up within a few seconds.

@@ -166,10 +166,10 @@ func TestKeysWithTheSameUserAndActivityShareOneMapEntry(t *testing.T) {
 	}
 }
 
-func TestStatsEncodesExactlyTheThreeDocumentedSections(t *testing.T) {
+func TestStatsEncodesExactlyTheDocumentedSections(t *testing.T) {
 	keys := jsonKeysOf(t, Stats{})
 
-	want := []string{"activity_totals", "total_users", "user_activity_counts"}
+	want := []string{"activity_totals", "pagination", "total_users", "user_activity_counts"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Fatalf("encoded keys = %v, want %v", keys, want)
 	}
@@ -193,6 +193,7 @@ func TestStatsKeepsNestedUserCountsUnderEachUserID(t *testing.T) {
 		TotalUsers:         1,
 		ActivityTotals:     map[string]int{"page_view": 3},
 		UserActivityCounts: map[string]map[string]int{"u1": {"page_view": 3}},
+		Pagination:         Pagination{Page: 1, PageSize: 50, TotalPages: 1},
 	}
 
 	encoded, err := json.Marshal(stats)
@@ -200,8 +201,44 @@ func TestStatsKeepsNestedUserCountsUnderEachUserID(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
-	want := `{"total_users":1,"activity_totals":{"page_view":3},"user_activity_counts":{"u1":{"page_view":3}}}`
+	want := `{"total_users":1,"activity_totals":{"page_view":3},"user_activity_counts":{"u1":{"page_view":3}},"pagination":{"page":1,"page_size":50,"total_pages":1}}`
 	if string(encoded) != want {
 		t.Fatalf("encoded %s, want %s", encoded, want)
+	}
+}
+
+func TestPaginationEncodesPageSizeAndTotalPagesUnderSnakeCaseKeys(t *testing.T) {
+	keys := jsonKeysOf(t, Pagination{Page: 2, PageSize: 20, TotalPages: 5})
+
+	want := []string{"page", "page_size", "total_pages"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("encoded keys = %v, want %v", keys, want)
+	}
+}
+
+func TestPaginationReportsZeroTotalPagesExplicitlyForAnEmptyResult(t *testing.T) {
+	encoded, err := json.Marshal(Pagination{Page: 1, PageSize: 50, TotalPages: 0})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var object map[string]any
+	_ = json.Unmarshal(encoded, &object)
+	if got, present := object["total_pages"]; !present || got != float64(0) {
+		t.Fatalf("total_pages = %v (present=%v), want an explicit 0", got, present)
+	}
+}
+
+func TestPaginationSurvivesAJSONRoundTrip(t *testing.T) {
+	original := Pagination{Page: 3, PageSize: 25, TotalPages: 9}
+
+	encoded, _ := json.Marshal(original)
+	var decoded Pagination
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if decoded != original {
+		t.Fatalf("round trip produced %+v, want %+v", decoded, original)
 	}
 }

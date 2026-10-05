@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"kafka-golang-analytics/internal/types"
 	"sort"
@@ -94,33 +95,91 @@ func (s *StatsStore) IncrementCounts(ctx context.Context, deltas map[types.Key]i
 	return nil
 }
 
-func (s *StatsStore) GetStats(ctx context.Context) (types.Stats, error) {
-	var rows []userActivityStat
-	err := s.db.WithContext(ctx).
-		Order("user_id, activity_type").
-		Find(&rows).Error
+type activityTotal struct {
+	ActivityType string
+	Total        int
+}
+
+func (s *StatsStore) GetStats(ctx context.Context, page, pageSize int) (types.Stats, error) {
+	if page < 1 || pageSize < 1 {
+		return types.Stats{}, fmt.Errorf("page and page size must be positive, got page=%d page_size=%d", page, pageSize)
+	}
+
+	var (
+		totalUsers int64
+		totals     []activityTotal
+		pageRows   []userActivityStat
+	)
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&userActivityStat{}).Distinct("user_id").Count(&totalUsers).Error; err != nil {
+			return fmt.Errorf("count users: %w", err)
+		}
+
+		err := tx.Model(&userActivityStat{}).
+			Select("activity_type, SUM(total_activity_count)::bigint AS total").
+			Group("activity_type").
+			Scan(&totals).Error
+		if err != nil {
+			return fmt.Errorf("total per activity: %w", err)
+		}
+
+		usersOnPage := tx.Model(&userActivityStat{}).
+			Distinct("user_id").
+			Order("user_id").
+			Limit(pageSize).
+			Offset((page - 1) * pageSize)
+
+		err = tx.Where("user_id IN (?)", usersOnPage).
+			Order("user_id, activity_type").
+			Find(&pageRows).Error
+		if err != nil {
+			return fmt.Errorf("users on page %d: %w", page, err)
+		}
+
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return types.Stats{}, fmt.Errorf("read user_activity_stats: %w", err)
 	}
-	return buildStats(rows), nil
+
+	return buildStats(int(totalUsers), totals, pageRows, page, pageSize), nil
 }
 
-func buildStats(rows []userActivityStat) types.Stats {
+func buildStats(totalUsers int, totals []activityTotal, pageRows []userActivityStat, page, pageSize int) types.Stats {
 	stats := types.Stats{
-		ActivityTotals:     make(map[string]int),
+		TotalUsers:         totalUsers,
+		ActivityTotals:     make(map[string]int, len(totals)),
 		UserActivityCounts: make(map[string]map[string]int),
+		Pagination: types.Pagination{
+			Page:       page,
+			PageSize:   pageSize,
+			TotalPages: totalPages(totalUsers, pageSize),
+		},
 	}
-	for _, row := range rows {
+
+	for _, total := range totals {
+		stats.ActivityTotals[total.ActivityType] = total.Total
+	}
+
+	for _, row := range pageRows {
 		perUser, ok := stats.UserActivityCounts[row.UserID]
 		if !ok {
 			perUser = make(map[string]int)
 			stats.UserActivityCounts[row.UserID] = perUser
 		}
 		perUser[row.ActivityType] += row.TotalActivityCount
-		stats.ActivityTotals[row.ActivityType] += row.TotalActivityCount
 	}
-	stats.TotalUsers = len(stats.UserActivityCounts)
+
 	return stats
+}
+
+func totalPages(totalUsers, pageSize int) int {
+	if pageSize < 1 {
+		return 0
+	}
+
+	return (totalUsers + pageSize - 1) / pageSize
 }
 
 func (s *StatsStore) Close() {

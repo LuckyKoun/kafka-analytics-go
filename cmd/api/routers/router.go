@@ -9,7 +9,7 @@ import (
 )
 
 type StatsReader interface {
-	GetStats(ctx context.Context) (types.Stats, error)
+	GetStats(ctx context.Context, page, pageSize int) (types.Stats, error)
 }
 
 func Router(store StatsReader, logger *slog.Logger, queryTimeout time.Duration) *http.ServeMux {

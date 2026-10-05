@@ -14,7 +14,7 @@ func unreachableDatabase() DatabaseConfig {
 }
 
 func TestBuildStatsEmptyHasNonNilMaps(t *testing.T) {
-	stats := buildStats(nil)
+	stats := buildStats(0, nil, nil, 1, 50)
 
 	if stats.TotalUsers != 0 {
 		t.Fatalf("TotalUsers = %d, want 0", stats.TotalUsers)
@@ -28,104 +28,135 @@ func TestBuildStatsEmptyHasNonNilMaps(t *testing.T) {
 	}
 }
 
-func TestBuildStatsAggregates(t *testing.T) {
-	stats := buildStats([]userActivityStat{
-		{UserID: "u1", ActivityType: "page_view", TotalActivityCount: 3},
-		{UserID: "u1", ActivityType: "click", TotalActivityCount: 4},
-		{UserID: "u2", ActivityType: "page_view", TotalActivityCount: 2},
-		{UserID: "u3", ActivityType: "click", TotalActivityCount: 1},
-	})
+func TestBuildStatsReportsTheGlobalUserCountEvenWhenOnlyAPageOfUsersIsListed(t *testing.T) {
+	pageRows := []userActivityStat{
+		{UserID: "u1", ActivityType: "page_view", TotalActivityCount: 1},
+		{UserID: "u2", ActivityType: "page_view", TotalActivityCount: 1},
+	}
 
-	if stats.TotalUsers != 3 {
-		t.Errorf("TotalUsers = %d, want 3", stats.TotalUsers)
-	}
-	if got := stats.ActivityTotals["page_view"]; got != 5 {
-		t.Errorf("page_view total = %d, want 5", got)
-	}
-	if got := stats.ActivityTotals["click"]; got != 5 {
-		t.Errorf("click total = %d, want 5", got)
-	}
-	if got := stats.UserActivityCounts["u1"]["click"]; got != 4 {
-		t.Errorf("u1 click = %d, want 4", got)
-	}
-	if got := len(stats.UserActivityCounts["u2"]); got != 1 {
-		t.Errorf("u2 has %d activity types, want 1", got)
+	stats := buildStats(120, nil, pageRows, 1, 2)
+
+	if stats.TotalUsers != 120 || len(stats.UserActivityCounts) != 2 {
+		t.Fatalf("TotalUsers=%d with %d users listed, want 120 with 2", stats.TotalUsers, len(stats.UserActivityCounts))
 	}
 }
 
-func TestBuildStatsViewsAreConsistent(t *testing.T) {
-	rows := []userActivityStat{
-		{UserID: "a", ActivityType: "x", TotalActivityCount: 7},
-		{UserID: "a", ActivityType: "y", TotalActivityCount: 1},
-		{UserID: "b", ActivityType: "x", TotalActivityCount: 9},
-	}
+func TestBuildStatsListsOnlyTheUsersItWasGiven(t *testing.T) {
+	pageRows := []userActivityStat{{UserID: "u7", ActivityType: "page_view", TotalActivityCount: 4}}
 
-	stats := buildStats(rows)
+	stats := buildStats(10, nil, pageRows, 2, 1)
 
-	perUserSum, perActivitySum := 0, 0
-	for _, byType := range stats.UserActivityCounts {
-		for _, n := range byType {
-			perUserSum += n
-		}
-	}
-	for _, n := range stats.ActivityTotals {
-		perActivitySum += n
-	}
-	if perUserSum != perActivitySum || perUserSum != 17 {
-		t.Fatalf("per-user sum %d, per-activity sum %d, want both 17", perUserSum, perActivitySum)
-	}
-}
-
-func TestBuildStatsCountsAUserOnceNoMatterHowManyActivityTypesTheyHave(t *testing.T) {
-	stats := buildStats([]userActivityStat{
-		{UserID: "busy", ActivityType: "page_view", TotalActivityCount: 1},
-		{UserID: "busy", ActivityType: "click", TotalActivityCount: 1},
-		{UserID: "busy", ActivityType: "scroll", TotalActivityCount: 1},
-	})
-
-	if stats.TotalUsers != 1 {
-		t.Fatalf("TotalUsers = %d, want 1", stats.TotalUsers)
+	if _, listed := stats.UserActivityCounts["u7"]; !listed || len(stats.UserActivityCounts) != 1 {
+		t.Fatalf("UserActivityCounts = %v, want only u7", stats.UserActivityCounts)
 	}
 }
 
 func TestBuildStatsListsEveryActivityTypeOfAUserUnderThatUser(t *testing.T) {
-	stats := buildStats([]userActivityStat{
+	pageRows := []userActivityStat{
 		{UserID: "u1", ActivityType: "page_view", TotalActivityCount: 3},
 		{UserID: "u1", ActivityType: "click", TotalActivityCount: 4},
-	})
+	}
 
-	want := map[string]int{"page_view": 3, "click": 4}
+	stats := buildStats(1, nil, pageRows, 1, 50)
+
 	got := stats.UserActivityCounts["u1"]
-	if len(got) != len(want) || got["page_view"] != 3 || got["click"] != 4 {
-		t.Fatalf("u1 counts = %v, want %v", got, want)
+	if len(got) != 2 || got["page_view"] != 3 || got["click"] != 4 {
+		t.Fatalf("u1 counts = %v, want page_view=3 and click=4", got)
 	}
 }
 
-func TestBuildStatsTotalsAnActivityAcrossAllUsers(t *testing.T) {
-	stats := buildStats([]userActivityStat{
-		{UserID: "u1", ActivityType: "click", TotalActivityCount: 10},
-		{UserID: "u2", ActivityType: "click", TotalActivityCount: 20},
-		{UserID: "u3", ActivityType: "click", TotalActivityCount: 30},
-	})
+func TestBuildStatsTakesActivityTotalsFromTheGlobalTotalsNotFromThePageRows(t *testing.T) {
+	totals := []activityTotal{{ActivityType: "click", Total: 1000}, {ActivityType: "page_view", Total: 5000}}
+	pageRows := []userActivityStat{{UserID: "u1", ActivityType: "click", TotalActivityCount: 3}}
 
-	if got := stats.ActivityTotals["click"]; got != 60 {
-		t.Fatalf("click total = %d, want 60", got)
+	stats := buildStats(40, totals, pageRows, 1, 1)
+
+	if stats.ActivityTotals["click"] != 1000 || stats.ActivityTotals["page_view"] != 5000 {
+		t.Fatalf("ActivityTotals = %v, want the global click=1000 and page_view=5000", stats.ActivityTotals)
 	}
 }
 
 func TestBuildStatsDoesNotInventActivityTypesThatWereNeverStored(t *testing.T) {
-	stats := buildStats([]userActivityStat{{UserID: "u1", ActivityType: "click", TotalActivityCount: 1}})
+	stats := buildStats(1, []activityTotal{{ActivityType: "click", Total: 1}}, nil, 1, 50)
 
-	if _, present := stats.ActivityTotals["page_view"]; present {
+	if _, present := stats.ActivityTotals["page_view"]; present || len(stats.ActivityTotals) != 1 {
 		t.Fatalf("ActivityTotals = %v, should only hold click", stats.ActivityTotals)
 	}
 }
 
 func TestBuildStatsKeepsUsersWhoseCountIsZero(t *testing.T) {
-	stats := buildStats([]userActivityStat{{UserID: "quiet", ActivityType: "click", TotalActivityCount: 0}})
+	pageRows := []userActivityStat{{UserID: "quiet", ActivityType: "click", TotalActivityCount: 0}}
 
-	if stats.TotalUsers != 1 || stats.UserActivityCounts["quiet"]["click"] != 0 {
+	stats := buildStats(1, nil, pageRows, 1, 50)
+
+	if stats.UserActivityCounts["quiet"]["click"] != 0 || len(stats.UserActivityCounts) != 1 {
 		t.Fatalf("stats = %+v, want the quiet user to be listed with a zero count", stats)
+	}
+}
+
+func TestBuildStatsEchoesThePageAndPageSizeItWasAskedFor(t *testing.T) {
+	stats := buildStats(120, nil, nil, 3, 20)
+
+	if stats.Pagination.Page != 3 || stats.Pagination.PageSize != 20 {
+		t.Fatalf("Pagination = %+v, want page 3 with page size 20", stats.Pagination)
+	}
+}
+
+func TestBuildStatsComputesTheTotalPagesFromAllUsersNotJustTheListedOnes(t *testing.T) {
+	pageRows := []userActivityStat{{UserID: "u1", ActivityType: "click", TotalActivityCount: 1}}
+
+	stats := buildStats(120, nil, pageRows, 1, 50)
+
+	if stats.Pagination.TotalPages != 3 {
+		t.Fatalf("TotalPages = %d, want 3 for 120 users at 50 per page", stats.Pagination.TotalPages)
+	}
+}
+
+func TestTotalPagesRoundsUpToCoverEveryUser(t *testing.T) {
+	cases := []struct {
+		name       string
+		totalUsers int
+		pageSize   int
+		want       int
+	}{
+		{"no users need no pages", 0, 50, 0},
+		{"one user needs one page", 1, 50, 1},
+		{"exactly one full page", 50, 50, 1},
+		{"one user more than a full page", 51, 50, 2},
+		{"exactly two full pages", 100, 50, 2},
+		{"one user more than two full pages", 101, 50, 3},
+		{"one user per page", 7, 1, 7},
+		{"a page size larger than the user count", 3, 100, 1},
+		{"a zero page size has no pages", 10, 0, 0},
+		{"a negative page size has no pages", 10, -5, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := totalPages(tc.totalUsers, tc.pageSize); got != tc.want {
+				t.Fatalf("totalPages(%d, %d) = %d, want %d", tc.totalUsers, tc.pageSize, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetStatsRejectsANonPositivePageOrPageSizeWithoutQueryingTheDatabase(t *testing.T) {
+	storeWithoutConnection := &StatsStore{}
+	cases := map[string][2]int{
+		"page zero":           {0, 50},
+		"a negative page":     {-1, 50},
+		"page size zero":      {1, 0},
+		"a negative pagesize": {1, -10},
+	}
+
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := storeWithoutConnection.GetStats(context.Background(), args[0], args[1])
+
+			if err == nil {
+				t.Fatalf("GetStats(page=%d, page_size=%d) succeeded, want an error", args[0], args[1])
+			}
+		})
 	}
 }
 
