@@ -15,18 +15,15 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-type fakeStorage struct {
-	mu    sync.Mutex
-	calls int
-	// failures is how many leading calls return an error.
-	failures int
-	// gate, when set, blocks every call until it is closed.
-	gate chan struct{}
-	// persisted is the sum of every delta that was stored successfully.
+type StorageMock struct {
+	mu        sync.Mutex
+	calls     int
+	failures  int
+	gate      chan struct{}
 	persisted map[types.Key]int
 }
 
-func (s *fakeStorage) IncrementCounts(_ context.Context, deltas map[types.Key]int) error {
+func (s *StorageMock) IncrementCounts(_ context.Context, deltas map[types.Key]int) error {
 	if s.gate != nil {
 		<-s.gate
 	}
@@ -45,13 +42,13 @@ func (s *fakeStorage) IncrementCounts(_ context.Context, deltas map[types.Key]in
 	return nil
 }
 
-func (s *fakeStorage) callCount() int {
+func (s *StorageMock) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
 }
 
-func (s *fakeStorage) total() int {
+func (s *StorageMock) total() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sum := 0
@@ -61,14 +58,14 @@ func (s *fakeStorage) total() int {
 	return sum
 }
 
-type fakeCommitter struct {
+type CommiterMock struct {
 	mu       sync.Mutex
 	failures int
 	attempts int
 	commits  []*kgo.Record
 }
 
-func (c *fakeCommitter) CommitRecords(_ context.Context, rs ...*kgo.Record) error {
+func (c *CommiterMock) CommitRecords(_ context.Context, rs ...*kgo.Record) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attempts++
@@ -79,13 +76,13 @@ func (c *fakeCommitter) CommitRecords(_ context.Context, rs ...*kgo.Record) erro
 	return nil
 }
 
-func (c *fakeCommitter) committed() []*kgo.Record {
+func (c *CommiterMock) committed() []*kgo.Record {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]*kgo.Record(nil), c.commits...)
 }
 
-func (c *fakeCommitter) attemptCount() int {
+func (c *CommiterMock) attemptCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.attempts
@@ -136,8 +133,8 @@ func stopAndWait(w *partitionWorker, graceful bool) {
 }
 
 func TestWorkerCommitsOnlyLastRecordAfterFlush(t *testing.T) {
-	storage := &fakeStorage{}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	go w.run()
 
@@ -160,8 +157,8 @@ func TestWorkerCommitsOnlyLastRecordAfterFlush(t *testing.T) {
 }
 
 func TestWorkerSkipsMalformedButStillCommits(t *testing.T) {
-	storage := &fakeStorage{}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	go w.run()
 
@@ -179,14 +176,13 @@ func TestWorkerSkipsMalformedButStillCommits(t *testing.T) {
 }
 
 func TestWorkerFlushFailureIsRetriedWithoutCommitting(t *testing.T) {
-	storage := &fakeStorage{failures: 2}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{failures: 2}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	go w.run()
 
 	w.enqueue(context.Background(), []*kgo.Record{activityRecord(5, "u1"), activityRecord(6, "u1")})
 
-	// No further batch arrives, so only the retry timer can recover this.
 	eventually(t, "offset commit after retries", func() bool { return len(committer.committed()) == 1 })
 	stopAndWait(w, true)
 
@@ -202,8 +198,8 @@ func TestWorkerFlushFailureIsRetriedWithoutCommitting(t *testing.T) {
 }
 
 func TestWorkerCommitFailureDoesNotPersistTwice(t *testing.T) {
-	storage := &fakeStorage{}
-	committer := &fakeCommitter{failures: 2}
+	storage := &StorageMock{}
+	committer := &CommiterMock{failures: 2}
 	w := newTestWorker(storage, committer)
 	go w.run()
 
@@ -221,8 +217,8 @@ func TestWorkerCommitFailureDoesNotPersistTwice(t *testing.T) {
 }
 
 func TestWorkerGracefulStopDrainsBufferedBatches(t *testing.T) {
-	storage := &fakeStorage{gate: make(chan struct{})}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{gate: make(chan struct{})}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	go w.run()
 
@@ -243,8 +239,8 @@ func TestWorkerGracefulStopDrainsBufferedBatches(t *testing.T) {
 }
 
 func TestWorkerGracefulStopFlushesLeftoverFailedWork(t *testing.T) {
-	storage := &fakeStorage{failures: 1}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{failures: 1}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	w.retryInterval = time.Hour // only the final stop may recover this
 	go w.run()
@@ -262,8 +258,8 @@ func TestWorkerGracefulStopFlushesLeftoverFailedWork(t *testing.T) {
 }
 
 func TestWorkerLostStopDoesNotFlushOrCommit(t *testing.T) {
-	storage := &fakeStorage{failures: 1000}
-	committer := &fakeCommitter{}
+	storage := &StorageMock{failures: 1000}
+	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
 	w.retryInterval = time.Hour
 	go w.run()
@@ -281,11 +277,11 @@ func TestWorkerLostStopDoesNotFlushOrCommit(t *testing.T) {
 }
 
 func TestWorkerStopIsIdempotentAndRejectsLateBatches(t *testing.T) {
-	w := newTestWorker(&fakeStorage{}, &fakeCommitter{})
+	w := newTestWorker(&StorageMock{}, &CommiterMock{})
 	go w.run()
 
 	w.stop(true)
-	w.stop(false) // must not panic on the closed channel, nor flip the mode
+	w.stop(false)
 	w.wait()
 
 	if !w.flushOnStop {
@@ -293,7 +289,6 @@ func TestWorkerStopIsIdempotentAndRejectsLateBatches(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	// Fill the buffer so only quit/ctx can unblock the send.
 	for i := 0; i < cap(w.recs); i++ {
 		w.recs <- nil
 	}

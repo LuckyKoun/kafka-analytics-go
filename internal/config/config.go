@@ -23,6 +23,15 @@ type ProducerConfig struct {
 	BufferDrainingTimeout int
 }
 
+type APIConfig struct {
+	Logging             logging.LoggingConfig  `json:"logging,omitempty"`
+	DatabaseConfig      storage.DatabaseConfig `json:"database_config,omitempty"`
+	HttpAddr            string                 `json:"http_addr,omitempty"`
+	HttpReadTimeout     int                    `json:"read_timeout,omitempty"`
+	HttpShutdownTimeout int
+	QueryTimeout        int
+}
+
 type ConsumerConfig struct {
 	BaseConfig              `json:"base_config,omitempty"`
 	ConsumerOrchestrator    consumerorchestrator.ConsumerOrchestratorConfig `json:"consumer_orchestrator_config,omitempty"`
@@ -65,6 +74,17 @@ func LoadProducerConfig() ProducerConfig {
 		HttpReadTimeout:       envAsInt("HTTP_READ_TIMEOUT", 3),
 		HttpShutdownTimeout:   envAsInt("HTTP_SHUTDOWN_TIMEOUT", 10),
 		BufferDrainingTimeout: envAsInt("PRODUCER_BUFFER_DRAINING_TIMEOUT", 60),
+	}
+}
+
+func LoadAPIConfig() APIConfig {
+	return APIConfig{
+		Logging:             LoadBaseConfig().Logging,
+		DatabaseConfig:      LoadDatabaseConfig(),
+		HttpAddr:            envOrDefault("HTTP_ADDR", ":8080"),
+		HttpReadTimeout:     envAsInt("HTTP_READ_TIMEOUT", 3),
+		HttpShutdownTimeout: envAsInt("HTTP_SHUTDOWN_TIMEOUT", 10),
+		QueryTimeout:        envAsInt("API_QUERY_TIMEOUT", 5),
 	}
 }
 

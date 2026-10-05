@@ -179,8 +179,11 @@ services:
       context: ..
       dockerfile: build/package/Dockerfile.api
     container_name: api
+    ports:
+      - 8080:8080
     environment:
       LOG_LEVEL: info
+      HTTP_ADDR: :8080
       POSTGRES_DSN: postgres://analytics_chall@postgres:5432/analytics_db
       POSTGRES_CONNECTION_TIMEOUT: 30
     depends_on:

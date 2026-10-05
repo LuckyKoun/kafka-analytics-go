@@ -2,21 +2,20 @@ package routers
 
 import (
 	"context"
+	"kafka-golang-analytics/internal/types"
 	"log/slog"
 	"net/http"
+	"time"
 )
 
-func Router(ctx context.Context, logger *slog.Logger) *http.ServeMux {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /stats", handleStats(ctx, logger))
-
-	return mux
+type StatsReader interface {
+	GetStats(ctx context.Context) (types.Stats, error)
 }
 
-func handleStats(ctx context.Context, logger *slog.Logger) http.HandlerFunc {
+func Router(store StatsReader, logger *slog.Logger, queryTimeout time.Duration) *http.ServeMux {
+	mux := http.NewServeMux()
 
-	return func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /stats", handleStats(store, logger, queryTimeout))
 
-	}
+	return mux
 }

@@ -21,17 +21,11 @@ type UserActivityAnalysisService interface {
 	Restore(map[types.Key]int)
 }
 
-// ConsumerOrchestratorConfig holds timeouts in seconds.
 type ConsumerOrchestratorConfig struct {
 	ConsumerFlushTimeout int
-	// DrainingTimeout bounds how long a stopping partition worker may spend on
-	// its final flush + commit. Keep it well below the group rebalance timeout
-	// (60s by default in franz-go), since revokes wait for it.
-	DrainingTimeout int
-	// PartitionBuffer is how many polled batches may queue per partition worker.
-	PartitionBuffer int
-	// MaxPollRecords bounds how many records one poll returns across partitions.
-	MaxPollRecords int
+	DrainingTimeout      int
+	PartitionBuffer      int
+	MaxPollRecords       int
 }
 
 type topicPartition struct {
@@ -39,9 +33,6 @@ type topicPartition struct {
 	partition int32
 }
 
-// ConsumerOrchestrator runs one partitionWorker goroutine per partition
-// currently assigned to this group member. The set of workers follows group
-// rebalances through the callbacks from RebalanceOpts.
 type ConsumerOrchestrator struct {
 	cfg                 ConsumerOrchestratorConfig
 	logger              *slog.Logger
@@ -64,11 +55,6 @@ func New(cfg ConsumerOrchestratorConfig, logger *slog.Logger, storage UserActivi
 	}
 }
 
-// RebalanceOpts returns the client options that tie partition workers to group
-// membership. They must be passed to kgo.NewClient. BlockRebalanceOnPoll makes
-// the callbacks run serially with polling, so a worker is never stopped (or
-// started) between a poll and the dispatch of its records, and offsets are
-// never committed for partitions this member no longer owns.
 func (c *ConsumerOrchestrator) RebalanceOpts() []kgo.Opt {
 	return []kgo.Opt{
 		kgo.BlockRebalanceOnPoll(),
@@ -78,8 +64,6 @@ func (c *ConsumerOrchestrator) RebalanceOpts() []kgo.Opt {
 	}
 }
 
-// The default balancer is cooperative-sticky, so assigned and revoked only
-// carry the partitions that changed. Workers for the rest keep running.
 func (c *ConsumerOrchestrator) onAssigned(_ context.Context, cl *kgo.Client, assigned map[string][]int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -91,14 +75,10 @@ func (c *ConsumerOrchestrator) onAssigned(_ context.Context, cl *kgo.Client, ass
 	}
 }
 
-// onRevoked is called at the end of every group session, possibly with no
-// partitions. Workers get to flush and commit before the partitions move.
 func (c *ConsumerOrchestrator) onRevoked(_ context.Context, _ *kgo.Client, revoked map[string][]int32) {
 	c.stopWorkers(c.takeWorkers(revoked), true)
 }
 
-// onLost means the session is gone and commits would fail or be stale, so the
-// workers drop their uncommitted state without flushing.
 func (c *ConsumerOrchestrator) onLost(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 	c.stopWorkers(c.takeWorkers(lost), false)
 }
@@ -116,8 +96,6 @@ func (c *ConsumerOrchestrator) startWorkerLocked(topic string, partition int32, 
 	c.logger.Info("partition worker started", "topic", topic, "partition", partition)
 }
 
-// takeWorkers removes the given partitions from the registry and returns their
-// workers, so each worker is stopped by exactly one caller.
 func (c *ConsumerOrchestrator) takeWorkers(partitions map[string][]int32) []*partitionWorker {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,8 +125,6 @@ func (c *ConsumerOrchestrator) takeAllWorkers() []*partitionWorker {
 	return taken
 }
 
-// stopWorkers signals every worker first so they flush concurrently, then
-// waits for all of them.
 func (c *ConsumerOrchestrator) stopWorkers(workers []*partitionWorker, graceful bool) {
 	for _, w := range workers {
 		w.stop(graceful)
@@ -168,7 +144,6 @@ func (c *ConsumerOrchestrator) dispatch(ctx context.Context, p kgo.FetchTopicPar
 	c.mu.Unlock()
 
 	if w == nil {
-		// BlockRebalanceOnPoll should make this impossible.
 		c.logger.Error("no worker for partition; records left uncommitted",
 			"topic", p.Topic, "partition", p.Partition, "records", len(p.Records))
 		return
@@ -179,14 +154,6 @@ func (c *ConsumerOrchestrator) dispatch(ctx context.Context, p kgo.FetchTopicPar
 	}
 }
 
-// Run polls and dispatches each partition's records to that partition's
-// worker. It returns after ctx is cancelled (or the client is closed) and all
-// workers have flushed and committed what they had.
-//
-// The send into a worker's buffer blocks while it is full, and rebalances stay
-// blocked until the poll loop calls AllowRebalance. A slow partition therefore
-// slows polling for all partitions, so keep PartitionBuffer and MaxPollRecords
-// small relative to the flush timeout.
 func (c *ConsumerOrchestrator) Run(ctx context.Context, client *kgo.Client) {
 	for {
 		fetches := client.PollRecords(ctx, c.cfg.MaxPollRecords)

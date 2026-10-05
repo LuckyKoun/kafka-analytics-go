@@ -15,10 +15,7 @@ import (
 type DatabaseConfig struct {
 	Dsn               string `json:"dsn,omitempty"`
 	ConnectionTimeout int    `json:"connection_timeout,omitempty"`
-	// MaxOpenConns caps the connection pool; 0 keeps the database/sql default
-	// (unlimited). Concurrent partition workers each flush on their own
-	// connection, so size it against Postgres max_connections.
-	MaxOpenConns int `json:"max_open_conns,omitempty"`
+	MaxOpenConns      int    `json:"max_open_conns,omitempty"`
 }
 
 type userActivityStat struct {
@@ -29,8 +26,6 @@ type userActivityStat struct {
 
 func (userActivityStat) TableName() string { return "user_activity_stats" }
 
-// StatsStore is safe for concurrent use: it only holds the *gorm.DB (a
-// goroutine-safe pool), and IncrementCounts is a single additive upsert.
 type StatsStore struct {
 	cfg DatabaseConfig
 	db  *gorm.DB
@@ -49,8 +44,7 @@ func NewStatsStore(ctx context.Context, cfg DatabaseConfig) (*StatsStore, error)
 	}
 	if cfg.MaxOpenConns > 0 {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-		// database/sql keeps only 2 idle connections by default, which would
-		// make concurrent workers reconnect on every flush.
+
 		sqlDB.SetMaxIdleConns(cfg.MaxOpenConns)
 	}
 	if err := sqlDB.PingContext(ctx); err != nil {
@@ -64,9 +58,6 @@ func NewStatsStore(ctx context.Context, cfg DatabaseConfig) (*StatsStore, error)
 	return &StatsStore{db: db}, nil
 }
 
-// IncrementCounts adds deltas to the stored totals. Rows are sorted so that
-// concurrent callers lock overlapping keys in the same order, which avoids
-// deadlocks between workers.
 func (s *StatsStore) IncrementCounts(ctx context.Context, deltas map[types.Key]int) error {
 	if len(deltas) == 0 {
 		return nil
@@ -103,7 +94,35 @@ func (s *StatsStore) IncrementCounts(ctx context.Context, deltas map[types.Key]i
 	return nil
 }
 
-// Close releases the underlying connection pool.
+func (s *StatsStore) GetStats(ctx context.Context) (types.Stats, error) {
+	var rows []userActivityStat
+	err := s.db.WithContext(ctx).
+		Order("user_id, activity_type").
+		Find(&rows).Error
+	if err != nil {
+		return types.Stats{}, fmt.Errorf("read user_activity_stats: %w", err)
+	}
+	return buildStats(rows), nil
+}
+
+func buildStats(rows []userActivityStat) types.Stats {
+	stats := types.Stats{
+		ActivityTotals:     make(map[string]int),
+		UserActivityCounts: make(map[string]map[string]int),
+	}
+	for _, row := range rows {
+		perUser, ok := stats.UserActivityCounts[row.UserID]
+		if !ok {
+			perUser = make(map[string]int)
+			stats.UserActivityCounts[row.UserID] = perUser
+		}
+		perUser[row.ActivityType] += row.TotalActivityCount
+		stats.ActivityTotals[row.ActivityType] += row.TotalActivityCount
+	}
+	stats.TotalUsers = len(stats.UserActivityCounts)
+	return stats
+}
+
 func (s *StatsStore) Close() {
 	if sqlDB, err := s.db.DB(); err == nil {
 		_ = sqlDB.Close()

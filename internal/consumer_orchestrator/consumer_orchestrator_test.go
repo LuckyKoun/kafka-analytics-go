@@ -28,9 +28,9 @@ func (c *ConsumerOrchestrator) workerCount() int {
 }
 
 func TestEachPartitionGetsItsOwnAnalyticsInstance(t *testing.T) {
-	c := newTestOrchestrator(&fakeStorage{})
-	c.startForTest("topic", 0, &fakeCommitter{})
-	c.startForTest("topic", 1, &fakeCommitter{})
+	c := newTestOrchestrator(&StorageMock{})
+	c.startForTest("topic", 0, &CommiterMock{})
+	c.startForTest("topic", 1, &CommiterMock{})
 	defer func() { c.stopWorkers(c.takeAllWorkers(), false) }()
 
 	w0 := c.workers[topicPartition{"topic", 0}]
@@ -44,10 +44,10 @@ func TestEachPartitionGetsItsOwnAnalyticsInstance(t *testing.T) {
 }
 
 func TestStartWorkerTwiceKeepsTheFirst(t *testing.T) {
-	c := newTestOrchestrator(&fakeStorage{})
-	c.startForTest("topic", 0, &fakeCommitter{})
+	c := newTestOrchestrator(&StorageMock{})
+	c.startForTest("topic", 0, &CommiterMock{})
 	first := c.workers[topicPartition{"topic", 0}]
-	c.startForTest("topic", 0, &fakeCommitter{})
+	c.startForTest("topic", 0, &CommiterMock{})
 	defer func() { c.stopWorkers(c.takeAllWorkers(), false) }()
 
 	if c.workerCount() != 1 || c.workers[topicPartition{"topic", 0}] != first {
@@ -56,15 +56,14 @@ func TestStartWorkerTwiceKeepsTheFirst(t *testing.T) {
 }
 
 func TestRevokeFlushesAndCommitsOnlyRevokedPartitions(t *testing.T) {
-	storage := &fakeStorage{failures: 1}
-	committers := map[int32]*fakeCommitter{0: {}, 1: {}}
+	storage := &StorageMock{failures: 1}
+	committers := map[int32]*CommiterMock{0: {}, 1: {}}
 	c := newTestOrchestrator(storage)
 	for p, cm := range committers {
 		c.startForTest("topic", p, cm)
 	}
 	defer func() { c.stopWorkers(c.takeAllWorkers(), false) }()
 
-	// Partition 0's first flush fails, so it holds uncommitted work when revoked.
 	c.dispatch(context.Background(), kgo.FetchTopicPartition{
 		Topic: "topic",
 		FetchPartition: kgo.FetchPartition{
@@ -91,8 +90,8 @@ func TestRevokeFlushesAndCommitsOnlyRevokedPartitions(t *testing.T) {
 }
 
 func TestLostDropsWorkersWithoutCommitting(t *testing.T) {
-	storage := &fakeStorage{failures: 1000}
-	cm := &fakeCommitter{}
+	storage := &StorageMock{failures: 1000}
+	cm := &CommiterMock{}
 	c := newTestOrchestrator(storage)
 	c.startForTest("topic", 0, cm)
 
@@ -116,7 +115,7 @@ func TestLostDropsWorkersWithoutCommitting(t *testing.T) {
 }
 
 func TestRevokeWithNothingAssignedIsANoop(t *testing.T) {
-	c := newTestOrchestrator(&fakeStorage{})
+	c := newTestOrchestrator(&StorageMock{})
 	done := make(chan struct{})
 	go func() {
 		c.onRevoked(context.Background(), nil, map[string][]int32{})
@@ -131,7 +130,7 @@ func TestRevokeWithNothingAssignedIsANoop(t *testing.T) {
 }
 
 func TestDispatchWithoutWorkerDoesNotPanic(t *testing.T) {
-	c := newTestOrchestrator(&fakeStorage{})
+	c := newTestOrchestrator(&StorageMock{})
 	c.dispatch(context.Background(), kgo.FetchTopicPartition{
 		Topic: "topic",
 		FetchPartition: kgo.FetchPartition{
@@ -142,8 +141,8 @@ func TestDispatchWithoutWorkerDoesNotPanic(t *testing.T) {
 }
 
 func TestStopAllDrainsEveryWorker(t *testing.T) {
-	storage := &fakeStorage{}
-	committers := map[int32]*fakeCommitter{0: {}, 1: {}, 2: {}}
+	storage := &StorageMock{}
+	committers := map[int32]*CommiterMock{0: {}, 1: {}, 2: {}}
 	c := newTestOrchestrator(storage)
 	for p, cm := range committers {
 		c.startForTest("topic", p, cm)

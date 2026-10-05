@@ -14,18 +14,10 @@ import (
 
 const defaultRetryInterval = 2 * time.Second
 
-// recordCommitter is the slice of *kgo.Client a worker needs.
 type recordCommitter interface {
 	CommitRecords(ctx context.Context, rs ...*kgo.Record) error
 }
 
-// partitionWorker consumes exactly one topic-partition on its own goroutine.
-//
-// It owns its UserActivityAnalysisService instance. That is what keeps the
-// invariant "a partition's offset is committed only after that partition's
-// counts are durable": Drain takes everything in the service, so sharing one
-// across partitions would let one worker persist (or commit past) another
-// worker's counts.
 type partitionWorker struct {
 	topic     string
 	partition int32
@@ -44,12 +36,9 @@ type partitionWorker struct {
 	done chan struct{}
 
 	stopOnce sync.Once
-	// flushOnStop is written before quit is closed and read after quit is
-	// received, so the channel close orders the access.
+
 	flushOnStop bool
 
-	// pending is the highest record handled but not yet committed. It is only
-	// touched by run().
 	pending *kgo.Record
 }
 
@@ -78,8 +67,6 @@ func newPartitionWorker(
 	}
 }
 
-// enqueue hands a batch to the worker. It blocks while the worker's buffer is
-// full, which is the backpressure point of the whole consumer.
 func (w *partitionWorker) enqueue(ctx context.Context, recs []*kgo.Record) bool {
 	select {
 	case w.recs <- recs:
@@ -91,10 +78,6 @@ func (w *partitionWorker) enqueue(ctx context.Context, recs []*kgo.Record) bool 
 	}
 }
 
-// stop asks the worker to exit and is safe to call more than once. A graceful
-// stop drains buffered batches and does a final flush + commit. A non-graceful
-// stop (partition lost) skips them: the new owner reprocesses everything that
-// was not committed, so flushing here would double count.
 func (w *partitionWorker) stop(graceful bool) {
 	w.stopOnce.Do(func() {
 		w.flushOnStop = graceful
@@ -121,7 +104,6 @@ func (w *partitionWorker) run() {
 			return
 		}
 
-		// Without this an idle partition would never retry a failed flush.
 		retry = nil
 		if w.pending != nil {
 			retry = time.After(w.retryInterval)
@@ -161,7 +143,6 @@ func (w *partitionWorker) handle(ctx context.Context, recs []*kgo.Record) {
 	for _, rec := range recs {
 		w.process(rec)
 	}
-	// Records of one partition arrive in offset order.
 	w.pending = recs[len(recs)-1]
 	w.flushAndCommit(ctx)
 }
@@ -191,10 +172,6 @@ func (w *partitionWorker) flush(ctx context.Context) error {
 	return nil
 }
 
-// flushAndCommit persists the counts and then commits the pending offset. On
-// any failure pending is kept and the next attempt (next batch, retry timer or
-// final stop) covers it. A commit failure after a successful flush does not
-// persist anything twice: the next flush drains only new counts.
 func (w *partitionWorker) flushAndCommit(parent context.Context) {
 	if w.pending == nil {
 		return
