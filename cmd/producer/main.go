@@ -39,7 +39,7 @@ func main() {
 	server := &http.Server{
 		Addr:        cfg.HttpAddr,
 		Handler:     routers.Producer(produceCtx, client, logger),
-		ReadTimeout: time.Duration(cfg.ReadTimeout),
+		ReadTimeout: time.Duration(cfg.HttpReadTimeout),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
