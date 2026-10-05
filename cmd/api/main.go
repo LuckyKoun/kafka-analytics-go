@@ -62,7 +62,6 @@ func runServer(server *http.Server, logger *slog.Logger, cfg config.APIConfig, s
 	logger.Info("starting http server at", "addr", cfg.HttpAddr)
 	err := server.ListenAndServe()
 
-	// Shutdown makes ListenAndServe return ErrServerClosed, which is not a failure.
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("failed to start http server", "error", err)
 		stop()

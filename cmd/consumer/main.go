@@ -19,6 +19,11 @@ func main() {
 
 	logger := logging.New(cfg.Logging)
 
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+
 	storageCtx, cancelStorage := context.WithTimeout(context.Background(), time.Duration(cfg.DatabaseConfig.ConnectionTimeout)*time.Second)
 	userActiviryStorage, err := storage.NewStatsStore(storageCtx, cfg.DatabaseConfig)
 

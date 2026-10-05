@@ -8,7 +8,11 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-func Producer(ctx context.Context, client *kgo.Client, logger *slog.Logger) *http.ServeMux {
+type RecordProducer interface {
+	Produce(ctx context.Context, record *kgo.Record, promise func(*kgo.Record, error))
+}
+
+func Producer(ctx context.Context, client RecordProducer, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /user_activities", handlePublish(ctx, client, logger))

@@ -127,6 +127,10 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for: %s", what)
 }
 
+func disableTimerRetries(w *partitionWorker) {
+	w.retryInterval = time.Hour
+}
+
 func stopAndWait(w *partitionWorker, graceful bool) {
 	w.stop(graceful)
 	w.wait()
@@ -222,9 +226,10 @@ func TestWorkerGracefulStopDrainsBufferedBatches(t *testing.T) {
 	w := newTestWorker(storage, committer)
 	go w.run()
 
-	// The first batch parks the worker inside storage, the second sits in the buffer.
-	w.enqueue(context.Background(), []*kgo.Record{activityRecord(1, "u1")})
-	w.enqueue(context.Background(), []*kgo.Record{activityRecord(2, "u2")})
+	batchThatParksTheWorkerInsideStorage := []*kgo.Record{activityRecord(1, "u1")}
+	batchWaitingInTheBuffer := []*kgo.Record{activityRecord(2, "u2")}
+	w.enqueue(context.Background(), batchThatParksTheWorkerInsideStorage)
+	w.enqueue(context.Background(), batchWaitingInTheBuffer)
 	w.stop(true)
 	close(storage.gate)
 	w.wait()
@@ -242,7 +247,7 @@ func TestWorkerGracefulStopFlushesLeftoverFailedWork(t *testing.T) {
 	storage := &StorageMock{failures: 1}
 	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
-	w.retryInterval = time.Hour // only the final stop may recover this
+	disableTimerRetries(w)
 	go w.run()
 
 	w.enqueue(context.Background(), []*kgo.Record{activityRecord(4, "u1")})
@@ -261,7 +266,7 @@ func TestWorkerLostStopDoesNotFlushOrCommit(t *testing.T) {
 	storage := &StorageMock{failures: 1000}
 	committer := &CommiterMock{}
 	w := newTestWorker(storage, committer)
-	w.retryInterval = time.Hour
+	disableTimerRetries(w)
 	go w.run()
 
 	w.enqueue(context.Background(), []*kgo.Record{activityRecord(4, "u1")})
@@ -294,5 +299,48 @@ func TestWorkerStopIsIdempotentAndRejectsLateBatches(t *testing.T) {
 	}
 	if w.enqueue(ctx, []*kgo.Record{activityRecord(1, "u1")}) {
 		t.Fatal("enqueue succeeded on a stopped worker with a full buffer")
+	}
+}
+
+func TestNewPartitionWorkerReadsConfiguredTimeoutsAsWholeSeconds(t *testing.T) {
+	w := newPartitionWorker("topic", 0, ConsumerOrchestratorConfig{ConsumerFlushTimeout: 10, DrainingTimeout: 7},
+		testLogger(), useractivity.NewAnalysisService(), &StorageMock{}, &CommiterMock{})
+
+	if w.flushTimeout != 10*time.Second || w.stopTimeout != 7*time.Second {
+		t.Fatalf("flush timeout %v and stop timeout %v, want 10s and 7s", w.flushTimeout, w.stopTimeout)
+	}
+}
+
+func TestNewPartitionWorkerTreatsANegativeBufferSizeAsNoBuffer(t *testing.T) {
+	w := newPartitionWorker("topic", 0, ConsumerOrchestratorConfig{PartitionBuffer: -3},
+		testLogger(), useractivity.NewAnalysisService(), &StorageMock{}, &CommiterMock{})
+
+	if got := cap(w.recs); got != 0 {
+		t.Fatalf("buffer capacity = %d, want 0", got)
+	}
+}
+
+func TestEnqueueGivesUpWhenTheContextIsCancelledWhileTheBufferIsFull(t *testing.T) {
+	w := newTestWorker(&StorageMock{}, &CommiterMock{})
+	for i := 0; i < cap(w.recs); i++ {
+		w.recs <- nil
+	}
+	cancelledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	accepted := w.enqueue(cancelledContext, []*kgo.Record{activityRecord(1, "u1")})
+
+	if accepted {
+		t.Fatal("enqueue reported success although the buffer was full and the context cancelled")
+	}
+}
+
+func TestEnqueueAcceptsABatchWhileTheBufferHasRoom(t *testing.T) {
+	w := newTestWorker(&StorageMock{}, &CommiterMock{})
+
+	accepted := w.enqueue(context.Background(), []*kgo.Record{activityRecord(1, "u1")})
+
+	if !accepted || len(w.recs) != 1 {
+		t.Fatalf("accepted=%v with %d queued batches, want accepted with 1 queued", accepted, len(w.recs))
 	}
 }

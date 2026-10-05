@@ -22,7 +22,7 @@ func New(cfg LoggingConfig) *slog.Logger {
 }
 
 func ParseLevel(level string) slog.Level {
-	switch strings.ToLower(level) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug":
 		return slog.LevelDebug
 	case "warn":

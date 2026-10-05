@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"kafka-golang-analytics/cmd/producer/routers"
 	"kafka-golang-analytics/internal/config"
 	"kafka-golang-analytics/internal/logging"
@@ -20,6 +21,11 @@ func main() {
 	cfg := config.LoadProducerConfig()
 
 	logger := logging.New(cfg.Logging)
+
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -79,7 +85,7 @@ func runServer(server *http.Server, logger *slog.Logger, cfg config.ProducerConf
 	logger.Info("starting http server at", "addr", cfg.HttpAddr, "brokers", cfg.Brokers, "topic", cfg.ProduceTopic)
 	err := server.ListenAndServe()
 
-	if err != nil {
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("failed to start http server", "error", err)
 		stop()
 	}

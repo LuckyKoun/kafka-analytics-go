@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	consumerorchestrator "kafka-golang-analytics/internal/consumer_orchestrator"
 	"kafka-golang-analytics/internal/logging"
 	"kafka-golang-analytics/internal/storage"
@@ -9,9 +10,19 @@ import (
 	"strings"
 )
 
+var warnings = logging.New(logging.LoggingConfig{Level: "warn"})
+
 type BaseConfig struct {
 	Brokers []string              `json:"brokers,omitempty"`
 	Logging logging.LoggingConfig `json:"logging,omitempty"`
+}
+
+func (c BaseConfig) Validate() error {
+	if len(c.Brokers) == 0 {
+		return errors.New("KAFKA_BROKERS must list at least one broker")
+	}
+
+	return nil
 }
 
 type ProducerConfig struct {
@@ -43,7 +54,7 @@ type ConsumerConfig struct {
 
 func LoadBaseConfig() BaseConfig {
 	return BaseConfig{
-		Brokers: strings.Split(envOrDefault("KAFKA_BROKERS", ""), ","),
+		Brokers: parseBrokers(envOrDefault("KAFKA_BROKERS", "")),
 		Logging: logging.LoggingConfig{
 			Level: envOrDefault("LOG_LEVEL", "info"),
 		},
@@ -71,6 +82,7 @@ func LoadProducerConfig() ProducerConfig {
 	return ProducerConfig{
 		BaseConfig:            LoadBaseConfig(),
 		ProduceTopic:          envOrDefault("PRODUCER_TOPIC", "incoming.user_activity"),
+		HttpAddr:              envOrDefault("PRODUCER_HTTP_ADDR", ":8081"),
 		HttpReadTimeout:       envAsInt("HTTP_READ_TIMEOUT", 3),
 		HttpShutdownTimeout:   envAsInt("HTTP_SHUTDOWN_TIMEOUT", 10),
 		BufferDrainingTimeout: envAsInt("PRODUCER_BUFFER_DRAINING_TIMEOUT", 60),
@@ -99,8 +111,20 @@ func LoadConsumerConfig() ConsumerConfig {
 	}
 }
 
+func parseBrokers(list string) []string {
+	var brokers []string
+
+	for _, broker := range strings.Split(list, ",") {
+		if broker = strings.TrimSpace(broker); broker != "" {
+			brokers = append(brokers, broker)
+		}
+	}
+
+	return brokers
+}
+
 func envOrDefault(key, defaultValue string) string {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 
 	if value != "" {
 		return value
@@ -110,13 +134,15 @@ func envOrDefault(key, defaultValue string) string {
 }
 
 func envAsInt(key string, defaultVal int) int {
-	valueStr := os.Getenv(key)
+	valueStr := envOrDefault(key, "")
 	if valueStr == "" {
 		return defaultVal
 	}
 
 	value, err := strconv.Atoi(valueStr)
 	if err != nil {
+		warnings.Warn("environment variable is not a whole number, using the default",
+			"variable", key, "value", valueStr, "default", defaultVal)
 		return defaultVal
 	}
 
