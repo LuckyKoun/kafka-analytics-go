@@ -5,6 +5,7 @@ import (
 	"moveoai-backend-chall/internal/config"
 	consumerorchestrator "moveoai-backend-chall/internal/consumer_orchestrator"
 	"moveoai-backend-chall/internal/logging"
+	"moveoai-backend-chall/internal/storage"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,14 +33,24 @@ func main() {
 
 	defer client.Close()
 
-	orchestrator := consumerorchestrator.New(client, cfg.ConsumerOrchestrator, logger)
+	storageCtx, cancelStorage := context.WithTimeout(context.Background(), time.Duration(cfg.DatabaseConfig.ConnectionTimeout))
+	userActiviryStorage, err := storage.NewStatsStore(storageCtx, cfg.DatabaseConfig)
+
+	cancelStorage()
+
+	if err != nil {
+		logger.Error("failed to init postgress database connection", "error", err)
+		os.Exit(1)
+	}
+
+	orchestrator := consumerorchestrator.New(client, cfg.ConsumerOrchestrator, logger, userActiviryStorage)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	logger.Info("Starting consumer", "brokers", cfg.Brokers, "topic", cfg.ConsumerTopic, "group_id", cfg.GroupID)
 
-	orchestrator.Run(ctx, logger)
+	orchestrator.Run(ctx)
 
 	logger.Info("Shutting down consumer")
 
@@ -48,5 +59,4 @@ func main() {
 	defer drainingCancel()
 
 	orchestrator.Shutdown(drainingCtx)
-
 }
