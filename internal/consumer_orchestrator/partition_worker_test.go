@@ -1,0 +1,303 @@
+package consumerorchestrator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"kafka-golang-analytics/internal/types"
+	useractivity "kafka-golang-analytics/internal/user_activity"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+type fakeStorage struct {
+	mu    sync.Mutex
+	calls int
+	// failures is how many leading calls return an error.
+	failures int
+	// gate, when set, blocks every call until it is closed.
+	gate chan struct{}
+	// persisted is the sum of every delta that was stored successfully.
+	persisted map[types.Key]int
+}
+
+func (s *fakeStorage) IncrementCounts(_ context.Context, deltas map[types.Key]int) error {
+	if s.gate != nil {
+		<-s.gate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls <= s.failures {
+		return errors.New("db down")
+	}
+	if s.persisted == nil {
+		s.persisted = make(map[types.Key]int)
+	}
+	for k, n := range deltas {
+		s.persisted[k] += n
+	}
+	return nil
+}
+
+func (s *fakeStorage) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *fakeStorage) total() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sum := 0
+	for _, n := range s.persisted {
+		sum += n
+	}
+	return sum
+}
+
+type fakeCommitter struct {
+	mu       sync.Mutex
+	failures int
+	attempts int
+	commits  []*kgo.Record
+}
+
+func (c *fakeCommitter) CommitRecords(_ context.Context, rs ...*kgo.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.attempts++
+	if c.attempts <= c.failures {
+		return errors.New("commit failed")
+	}
+	c.commits = append(c.commits, rs...)
+	return nil
+}
+
+func (c *fakeCommitter) committed() []*kgo.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*kgo.Record(nil), c.commits...)
+}
+
+func (c *fakeCommitter) attemptCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.attempts
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func newTestWorker(storage UserActivityStorage, committer recordCommitter) *partitionWorker {
+	w := newPartitionWorker("topic", 3, ConsumerOrchestratorConfig{
+		ConsumerFlushTimeout: 2,
+		DrainingTimeout:      2,
+		PartitionBuffer:      4,
+	}, testLogger(), useractivity.NewAnalysisService(), storage, committer)
+	w.retryInterval = 10 * time.Millisecond
+	return w
+}
+
+func activityRecord(offset int64, userID string) *kgo.Record {
+	return &kgo.Record{
+		Topic:     "topic",
+		Partition: 3,
+		Offset:    offset,
+		Value:     []byte(fmt.Sprintf(`{"user_id":%q,"activity_type":"page_view"}`, userID)),
+	}
+}
+
+func rawRecord(offset int64, value string) *kgo.Record {
+	return &kgo.Record{Topic: "topic", Partition: 3, Offset: offset, Value: []byte(value)}
+}
+
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for: %s", what)
+}
+
+func stopAndWait(w *partitionWorker, graceful bool) {
+	w.stop(graceful)
+	w.wait()
+}
+
+func TestWorkerCommitsOnlyLastRecordAfterFlush(t *testing.T) {
+	storage := &fakeStorage{}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{
+		activityRecord(10, "u1"), activityRecord(11, "u1"), activityRecord(12, "u2"),
+	})
+
+	eventually(t, "offset commit", func() bool { return len(committer.committed()) == 1 })
+	stopAndWait(w, true)
+
+	if got := committer.committed()[0].Offset; got != 12 {
+		t.Fatalf("committed offset %d, want 12", got)
+	}
+	if got := storage.total(); got != 3 {
+		t.Fatalf("persisted %d activities, want 3", got)
+	}
+	if got := storage.persisted[types.Key{UserID: "u1", ActivityType: "page_view"}]; got != 2 {
+		t.Fatalf("u1 persisted %d, want 2", got)
+	}
+}
+
+func TestWorkerSkipsMalformedButStillCommits(t *testing.T) {
+	storage := &fakeStorage{}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(1, "u1"), rawRecord(2, "{not json")})
+
+	eventually(t, "offset commit", func() bool { return len(committer.committed()) == 1 })
+	stopAndWait(w, true)
+
+	if got := committer.committed()[0].Offset; got != 2 {
+		t.Fatalf("committed offset %d, want 2 (malformed record is skipped but committed)", got)
+	}
+	if got := storage.total(); got != 1 {
+		t.Fatalf("persisted %d activities, want 1", got)
+	}
+}
+
+func TestWorkerFlushFailureIsRetriedWithoutCommitting(t *testing.T) {
+	storage := &fakeStorage{failures: 2}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(5, "u1"), activityRecord(6, "u1")})
+
+	// No further batch arrives, so only the retry timer can recover this.
+	eventually(t, "offset commit after retries", func() bool { return len(committer.committed()) == 1 })
+	stopAndWait(w, true)
+
+	if got := committer.committed()[0].Offset; got != 6 {
+		t.Fatalf("committed offset %d, want 6", got)
+	}
+	if got := storage.callCount(); got < 3 {
+		t.Fatalf("storage called %d times, want at least 3 (2 failures then success)", got)
+	}
+	if got := storage.total(); got != 2 {
+		t.Fatalf("persisted %d activities, want exactly 2 (restored counts must not be lost or doubled)", got)
+	}
+}
+
+func TestWorkerCommitFailureDoesNotPersistTwice(t *testing.T) {
+	storage := &fakeStorage{}
+	committer := &fakeCommitter{failures: 2}
+	w := newTestWorker(storage, committer)
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(7, "u1"), activityRecord(8, "u2")})
+
+	eventually(t, "offset commit after retries", func() bool { return len(committer.committed()) == 1 })
+	stopAndWait(w, true)
+
+	if got := committer.committed()[0].Offset; got != 8 {
+		t.Fatalf("committed offset %d, want 8", got)
+	}
+	if got := storage.total(); got != 2 {
+		t.Fatalf("persisted %d activities, want exactly 2 (commit retries must not re-persist)", got)
+	}
+}
+
+func TestWorkerGracefulStopDrainsBufferedBatches(t *testing.T) {
+	storage := &fakeStorage{gate: make(chan struct{})}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	go w.run()
+
+	// The first batch parks the worker inside storage, the second sits in the buffer.
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(1, "u1")})
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(2, "u2")})
+	w.stop(true)
+	close(storage.gate)
+	w.wait()
+
+	if got := storage.total(); got != 2 {
+		t.Fatalf("persisted %d activities, want 2", got)
+	}
+	commits := committer.committed()
+	if len(commits) == 0 || commits[len(commits)-1].Offset != 2 {
+		t.Fatalf("last committed record = %v, want offset 2", commits)
+	}
+}
+
+func TestWorkerGracefulStopFlushesLeftoverFailedWork(t *testing.T) {
+	storage := &fakeStorage{failures: 1}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	w.retryInterval = time.Hour // only the final stop may recover this
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(4, "u1")})
+	eventually(t, "first (failing) flush", func() bool { return storage.callCount() == 1 })
+	stopAndWait(w, true)
+
+	if got := storage.total(); got != 1 {
+		t.Fatalf("persisted %d activities, want 1", got)
+	}
+	if c := committer.committed(); len(c) != 1 || c[0].Offset != 4 {
+		t.Fatalf("committed %v, want offset 4", c)
+	}
+}
+
+func TestWorkerLostStopDoesNotFlushOrCommit(t *testing.T) {
+	storage := &fakeStorage{failures: 1000}
+	committer := &fakeCommitter{}
+	w := newTestWorker(storage, committer)
+	w.retryInterval = time.Hour
+	go w.run()
+
+	w.enqueue(context.Background(), []*kgo.Record{activityRecord(4, "u1")})
+	eventually(t, "first (failing) flush", func() bool { return storage.callCount() == 1 })
+	stopAndWait(w, false)
+
+	if got := storage.callCount(); got != 1 {
+		t.Fatalf("storage called %d times, want 1 (a lost partition must not flush)", got)
+	}
+	if got := committer.attemptCount(); got != 0 {
+		t.Fatalf("commit attempted %d times, want 0", got)
+	}
+}
+
+func TestWorkerStopIsIdempotentAndRejectsLateBatches(t *testing.T) {
+	w := newTestWorker(&fakeStorage{}, &fakeCommitter{})
+	go w.run()
+
+	w.stop(true)
+	w.stop(false) // must not panic on the closed channel, nor flip the mode
+	w.wait()
+
+	if !w.flushOnStop {
+		t.Fatal("second stop overrode the first")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// Fill the buffer so only quit/ctx can unblock the send.
+	for i := 0; i < cap(w.recs); i++ {
+		w.recs <- nil
+	}
+	if w.enqueue(ctx, []*kgo.Record{activityRecord(1, "u1")}) {
+		t.Fatal("enqueue succeeded on a stopped worker with a full buffer")
+	}
+}

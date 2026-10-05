@@ -15,6 +15,10 @@ import (
 type DatabaseConfig struct {
 	Dsn               string `json:"dsn,omitempty"`
 	ConnectionTimeout int    `json:"connection_timeout,omitempty"`
+	// MaxOpenConns caps the connection pool; 0 keeps the database/sql default
+	// (unlimited). Concurrent partition workers each flush on their own
+	// connection, so size it against Postgres max_connections.
+	MaxOpenConns int `json:"max_open_conns,omitempty"`
 }
 
 type userActivityStat struct {
@@ -25,6 +29,8 @@ type userActivityStat struct {
 
 func (userActivityStat) TableName() string { return "user_activity_stats" }
 
+// StatsStore is safe for concurrent use: it only holds the *gorm.DB (a
+// goroutine-safe pool), and IncrementCounts is a single additive upsert.
 type StatsStore struct {
 	cfg DatabaseConfig
 	db  *gorm.DB
@@ -41,6 +47,12 @@ func NewStatsStore(ctx context.Context, cfg DatabaseConfig) (*StatsStore, error)
 	if err != nil {
 		return nil, fmt.Errorf("postgres pool: %w", err)
 	}
+	if cfg.MaxOpenConns > 0 {
+		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+		// database/sql keeps only 2 idle connections by default, which would
+		// make concurrent workers reconnect on every flush.
+		sqlDB.SetMaxIdleConns(cfg.MaxOpenConns)
+	}
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("postgres ping: %w", err)
@@ -52,6 +64,9 @@ func NewStatsStore(ctx context.Context, cfg DatabaseConfig) (*StatsStore, error)
 	return &StatsStore{db: db}, nil
 }
 
+// IncrementCounts adds deltas to the stored totals. Rows are sorted so that
+// concurrent callers lock overlapping keys in the same order, which avoids
+// deadlocks between workers.
 func (s *StatsStore) IncrementCounts(ctx context.Context, deltas map[types.Key]int) error {
 	if len(deltas) == 0 {
 		return nil

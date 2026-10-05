@@ -39,7 +39,7 @@ func main() {
 	server := &http.Server{
 		Addr:        cfg.HttpAddr,
 		Handler:     routers.Producer(produceCtx, client, logger),
-		ReadTimeout: time.Duration(cfg.HttpReadTimeout),
+		ReadTimeout: time.Duration(cfg.HttpReadTimeout) * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -51,7 +51,7 @@ func main() {
 
 	logger.Info("shutting down producer")
 
-	httpShutdownCtx, httpServerCancel := context.WithTimeout(context.Background(), time.Duration(cfg.HttpShutdownTimeout))
+	httpShutdownCtx, httpServerCancel := context.WithTimeout(context.Background(), time.Duration(cfg.HttpShutdownTimeout)*time.Second)
 
 	defer httpServerCancel()
 
@@ -63,7 +63,7 @@ func main() {
 
 	cancelProduce()
 
-	drainingCtx, cancelDraining := context.WithTimeout(context.Background(), time.Duration(cfg.BufferDrainingTimeout))
+	drainingCtx, cancelDraining := context.WithTimeout(context.Background(), time.Duration(cfg.BufferDrainingTimeout)*time.Second)
 	defer cancelDraining()
 
 	err = client.Flush(drainingCtx)

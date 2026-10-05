@@ -44,6 +44,9 @@ func LoadBaseConfig() BaseConfig {
 func LoadOrchestratorConfig() consumerorchestrator.ConsumerOrchestratorConfig {
 	return consumerorchestrator.ConsumerOrchestratorConfig{
 		ConsumerFlushTimeout: envAsInt("CONSUMER_FLUSH_TIMEOUT", 10),
+		DrainingTimeout:      envAsInt("CONSUMER_DRAINING_TIMEOUT", 10),
+		PartitionBuffer:      envAsInt("CONSUMER_PARTITION_BUFFER", 2),
+		MaxPollRecords:       envAsInt("CONSUMER_MAX_POLL_RECORDS", 500),
 	}
 }
 
@@ -51,6 +54,7 @@ func LoadDatabaseConfig() storage.DatabaseConfig {
 	return storage.DatabaseConfig{
 		Dsn:               envOrDefault("POSTGRES_DSN", "postgres://analytics_chall@localhost:5432/analytics_db"),
 		ConnectionTimeout: envAsInt("POSTGRES_CONNECTION_TIMEOUT", 30),
+		MaxOpenConns:      envAsInt("POSTGRES_MAX_OPEN_CONNS", 10),
 	}
 }
 
