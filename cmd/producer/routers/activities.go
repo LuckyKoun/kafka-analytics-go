@@ -3,6 +3,7 @@ package routers
 import (
 	"context"
 	"encoding/json"
+	httputils "kafka-golang-analytics/internal/http_utils"
 	"kafka-golang-analytics/internal/types"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,7 @@ func handlePublish(ctx context.Context, client *kgo.Client, logger *slog.Logger)
 
 		if err != nil {
 			logger.Error("invalid user activity body payload", "error", err)
-			writeErrorResponse(w, http.StatusBadRequest, formatError("invalid user activity body payload", err), logger)
+			httputils.WriteErrorResponse(w, http.StatusBadRequest, httputils.FormatError("invalid user activity body payload", err), logger)
 			return
 		}
 
@@ -26,7 +27,7 @@ func handlePublish(ctx context.Context, client *kgo.Client, logger *slog.Logger)
 
 		if err != nil {
 			logger.Error("error marshalling activity struct", err)
-			writeErrorResponse(w, http.StatusInternalServerError, formatError("error encoding payload", err), logger)
+			httputils.WriteErrorResponse(w, http.StatusInternalServerError, httputils.FormatError("error encoding payload", err), logger)
 			return
 		}
 
@@ -46,6 +47,6 @@ func handlePublish(ctx context.Context, client *kgo.Client, logger *slog.Logger)
 			)
 		})
 
-		writeResponse(w, http.StatusAccepted, map[string]string{"status": "ok"}, logger)
+		httputils.WriteResponse(w, http.StatusAccepted, map[string]string{"status": "ok"}, logger)
 	}
 }
