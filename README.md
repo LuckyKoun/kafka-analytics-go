@@ -93,10 +93,10 @@ The number of users grows gradually. All the settings are constants at the top o
 | Constant | Default | Meaning |
 |---|---|---|
 | `HOST` | `http://localhost:8081` | producer to hit (`--host` overrides it) |
-| `INITIAL_USERS` | 10 | users at the start |
-| `USERS_PER_STEP` | 10 | users added at every step |
+| `INITIAL_USERS` | 100 | users at the start |
+| `USERS_PER_STEP` | 50 | users added at every step |
 | `STEP_INTERVAL_SECONDS` | 15 | seconds between steps |
-| `MAX_USERS` | 100 | where the growth stops |
+| `MAX_USERS` | 1000 | where the growth stops |
 | `HOLD_SECONDS` | 30 | how long to keep `MAX_USERS` before stopping |
 | `MIN_WAIT_SECONDS`, `MAX_WAIT_SECONDS` | 0.5, 2.0 | pause between the requests of one user |
 
