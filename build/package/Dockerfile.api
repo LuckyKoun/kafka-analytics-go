@@ -8,10 +8,10 @@ FROM deps AS build
 COPY cmd/ cmd/
 
 COPY internal/ internal/
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/consumer ./cmd/consumer
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/api ./cmd/api
 
 FROM alpine:3.24 AS runtime
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup -D -H
 USER appuser
-COPY --from=build /out/consumer /usr/local/bin/consumer
-ENTRYPOINT [ "consumer" ]
+COPY --from=build /out/api /usr/local/bin/api
+ENTRYPOINT [ "api" ]

@@ -1,0 +1,17 @@
+FROM golang:1.27.1-trixie AS deps
+WORKDIR /src
+
+COPY go.mod go.sum ./
+COPY vendor/ vendor/
+
+FROM deps AS build
+COPY cmd/ cmd/
+
+COPY internal/ internal/
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/producer ./cmd/producer
+
+FROM alpine:3.24 AS runtime
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup -D -H
+USER appuser
+COPY --from=build /out/producer /usr/local/bin/producer
+ENTRYPOINT [ "producer" ]

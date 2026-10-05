@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"kafka-golang-analytics/cmd/producer/routers"
+	"kafka-golang-analytics/internal/config"
+	"kafka-golang-analytics/internal/logging"
 	"log/slog"
-	"moveoai-backend-chall/cmd/producer/routers"
-	"moveoai-backend-chall/internal/config"
-	"moveoai-backend-chall/internal/logging"
 	"net/http"
 	"os"
 	"os/signal"

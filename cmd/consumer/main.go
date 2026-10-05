@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"moveoai-backend-chall/internal/config"
-	consumerorchestrator "moveoai-backend-chall/internal/consumer_orchestrator"
-	"moveoai-backend-chall/internal/logging"
-	"moveoai-backend-chall/internal/storage"
+	"kafka-golang-analytics/internal/config"
+	consumerorchestrator "kafka-golang-analytics/internal/consumer_orchestrator"
+	"kafka-golang-analytics/internal/logging"
+	"kafka-golang-analytics/internal/storage"
 	"os"
 	"os/signal"
 	"syscall"
